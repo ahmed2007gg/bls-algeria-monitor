@@ -157,24 +157,35 @@ async def login_to_bls(page) -> bool:
         return False
     try:
         log.info(f"Attempting login for: {BLS_EMAIL}")
-        await page.goto("https://algeria.blsspainglobal.com/DZA/account/login", timeout=60000)
-        await asyncio.sleep(3)
+        await page.goto(
+            "https://algeria.blsspainglobal.com/DZA/account/login",
+            timeout=90000,
+            wait_until="domcontentloaded"
+        )
+
+        # انتظار ظهور حقل الإيميل صراحةً قبل أي إجراء
+        await page.wait_for_selector('input[name="Email"]', timeout=60000, state="visible")
+        await asyncio.sleep(2)
 
         await page.fill('input[name="Email"]', BLS_EMAIL)
         await page.fill('input[name="Password"]', BLS_PASSWORD)
         await page.click('button[type="submit"]')
-        await asyncio.sleep(6)
+
+        # انتظار انتقال الصفحة بعد اللوجين
+        await page.wait_for_load_state("domcontentloaded", timeout=30000)
+        await asyncio.sleep(3)
 
         current_url = page.url.lower()
-        success = "login" not in current_url and ("dashboard" in current_url or "appointment" in current_url or "dza" in current_url)
+        success = "login" not in current_url
 
         if success:
-            log.info("Login successful.")
+            log.info(f"Login successful. URL: {page.url}")
         else:
-            log.error(f"Login may have failed. Current URL: {page.url}")
-            send_telegram(f"⚠️ <b>تحذير:</b> فشل تسجيل الدخول. تحقق من البيانات في Railway.\nالرابط الحالي: {page.url}")
+            log.error(f"Login failed. Current URL: {page.url}")
+            send_telegram(f"⚠️ <b>فشل تسجيل الدخول.</b>\nالرابط الحالي: {page.url}")
 
         return success
+
     except Exception as e:
         log.error(f"Login error: {e}")
         send_telegram(f"⚠️ <b>خطأ في تسجيل الدخول:</b> {e}")
@@ -187,7 +198,7 @@ async def login_to_bls(page) -> bool:
 async def check_combination(page, combo) -> list:
     try:
         log.info(f"Checking: {combo['loc_ar']} | {combo['sub']} | {combo['vtype']} | {combo['cat']}")
-        await page.goto(BLS_URL, timeout=60000, wait_until="domcontentloaded")
+        await page.goto(BLS_URL, timeout=90000, wait_until="domcontentloaded")
         await asyncio.sleep(3)
 
         # تحقق أننا لا زلنا مسجلين دخول
@@ -198,7 +209,7 @@ async def check_combination(page, combo) -> list:
         async def safe_select(selector, label):
             try:
                 el = page.locator(selector).first
-                await el.wait_for(state="visible", timeout=8000)
+                await el.wait_for(state="visible", timeout=10000)
                 await el.select_option(label=label)
                 await asyncio.sleep(1.5)
                 return True
@@ -262,7 +273,6 @@ async def run_monitor():
                     await asyncio.sleep(300)
                     continue
 
-                # فحص كل التركيبات (لا عشوائي) — دورة كاملة ثم انتظار
                 while is_running:
                     log.info(f"=== Scan Cycle Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
 
@@ -310,7 +320,6 @@ async def run_monitor():
 # =============================================
 
 async def main():
-    # التحقق من المتغيرات الأساسية عند البدء
     if not TELEGRAM_BOT_TOKEN:
         print("ERROR: TELEGRAM_BOT_TOKEN not set!")
         return
@@ -327,18 +336,16 @@ async def main():
 
     await set_commands(app)
 
-    log.info("Initializing Telegram bot...")
+    log.info("Bot is running. Starting monitor...")
 
-    # تشغيل البوت والمراقب معاً بشكل صحيح
     async with app:
         await app.initialize()
         await app.start()
         await app.updater.start_polling()
 
-        log.info("Bot is running. Starting monitor...")
         send_telegram("🤖 <b>البوت شغّال!</b>\nبدأت مراقبة مواعيد BLS. اكتب /status للتحقق من الحالة.")
 
-        await run_monitor()  # يشتغل إلى الأبد هنا
+        await run_monitor()
 
         await app.updater.stop()
         await app.stop()
