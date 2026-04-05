@@ -68,9 +68,14 @@ log = logging.getLogger(__name__)
 # =============================================
 
 async def set_commands(app):
+    # إضافة التعليمات المطلوبة كأوامر في القائمة لتسهيل الوصول إليها
     commands = [
         BotCommand("start", "تشغيل البوت"),
-        BotCommand("stop", "إيقاف البوت")
+        BotCommand("stop", "إيقاف البوت"),
+        BotCommand("email", "BLS_EMAIL: ضع إيميل حسابك هنا"),
+        BotCommand("password", "BLS_PASSWORD: ضع كلمة سر حسابك هنا"),
+        BotCommand("token", "TELEGRAM_BOT_TOKEN: (موجود مسبقاً ولكن تأكد منه)"),
+        BotCommand("chat_id", "TELEGRAM_CHAT_ID: (معرف الشات الخاص بك)")
     ]
     await app.bot.set_my_commands(commands)
 
@@ -90,6 +95,10 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_running
     is_running = False
     await update.message.reply_text("🛑 تم إيقاف البوت مؤقتاً.")
+
+async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # رد بسيط عند الضغط على أوامر المعلومات
+    await update.message.reply_text("💡 هذه المعلومة يجب ضبطها في متغيرات البيئة (Variables) في Railway ليعمل البوت بشكل صحيح.")
 
 # =============================================
 #           BROWSER ENGINE
@@ -214,8 +223,15 @@ async def run_monitor():
 async def main():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     
+    # أوامر التحكم
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("stop", stop_command))
+    
+    # أوامر المعلومات (للعرض فقط في القائمة)
+    app.add_handler(CommandHandler("email", info_command))
+    app.add_handler(CommandHandler("password", info_command))
+    app.add_handler(CommandHandler("token", info_command))
+    app.add_handler(CommandHandler("chat_id", info_command))
     
     await set_commands(app)
     
