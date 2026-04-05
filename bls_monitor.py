@@ -23,7 +23,7 @@ from playwright.async_api import async_playwright
 #           USER CONFIGURATION - عدّل هنا
 # =============================================
 
-TELEGRAM_BOT_TOKEN = "8573323796:AAHbEo3X3ZqhWZ0aUXQ83_vVbNi-LTYGRRE"
+TELEGRAM_BOT_TOKEN = "8674136162:AAF7erCPgpP81NkS0NSz_7ssdruOmEW9eNc"
 TELEGRAM_CHAT_ID   = "8499305437"
 
 BLS_URL   = "https://algeria.blsspainglobal.com/DZA/bls/appointment"
