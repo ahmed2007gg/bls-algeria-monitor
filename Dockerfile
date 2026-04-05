@@ -33,4 +33,4 @@ RUN playwright install chromium
 
 COPY . .
 
-CMD ["python", "bot.py"]
+CMD ["python", "bls_monitor.py"]
