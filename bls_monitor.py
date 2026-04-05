@@ -11,8 +11,7 @@ import logging
 import requests
 import os
 import subprocess
-import json
-from datetime import datetime, time
+from datetime import datetime
 from playwright.async_api import async_playwright
 from telegram import Update, Bot, BotCommand
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
@@ -35,15 +34,8 @@ BLS_PASSWORD       = os.getenv("BLS_PASSWORD", "")
 BLS_URL   = "https://algeria.blsspainglobal.com/DZA/bls/appointment"
 HEADLESS  = True
 
-# إعدادات افتراضية قابلة للتغيير عبر الأوامر
-config = {
-    "is_running": True,
-    "min_delay": 60,
-    "max_delay": 120,
-    "drop_threshold": 1, # حد النقصان
-    "quiet_hours": {"start": "00:00", "end": "06:00"},
-    "stats": {"total_scans": 0, "found_slots": 0, "last_scan": "Never"}
-}
+# حالة البوت (تشغيل/إيقاف)
+is_running = True
 
 # =============================================
 #   قائمة المراكز والأنواع
@@ -77,17 +69,8 @@ log = logging.getLogger(__name__)
 
 async def set_commands(app):
     commands = [
-        BotCommand("start", "الرئيسية"),
-        BotCommand("check", "فحص فوري"),
-        BotCommand("stats", "الإحصائيات"),
-        BotCommand("reset", "إعادة تعيين إحصائيات مركز"),
-        BotCommand("daily", "تقرير يومي فوري"),
-        BotCommand("intervals", "عرض التواقيت"),
-        BotCommand("interval", "تغيير توقيت مركز"),
-        BotCommand("drops", "عرض حدود النقصان"),
-        BotCommand("drop", "تغيير حد النقصان"),
-        BotCommand("quiet", "الساعات الصامتة"),
-        BotCommand("stop", "إيقاف البوت مؤقتاً")
+        BotCommand("start", "تشغيل البوت"),
+        BotCommand("stop", "إيقاف البوت")
     ]
     await app.bot.set_my_commands(commands)
 
@@ -98,68 +81,14 @@ def send_telegram(text: str):
     except Exception as e:
         log.error(f"Telegram error: {e}")
 
-# --- COMMAND HANDLERS ---
-
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    config["is_running"] = True
-    await update.message.reply_text("✅ <b>أهلاً بك في بوت BLS Algeria!</b>\nتم تشغيل البوت بنجاح. يمكنك استخدام القائمة للتحكم.", parse_mode="HTML")
-
-async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 جاري بدء فحص فوري الآن... يرجى الانتظار.")
-    # سيتم تنفيذ الفحص في الدورة القادمة فوراً
-    config["force_check"] = True
-
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = (f"📊 <b>إحصائيات البوت:</b>\n"
-           f"• إجمالي عمليات الفحص: {config['stats']['total_scans']}\n"
-           f"• مواعيد تم العثور عليها: {config['stats']['found_slots']}\n"
-           f"• آخر فحص: {config['stats']['last_scan']}\n"
-           f"• الحالة: {'🟢 يعمل' if config['is_running'] else '🔴 متوقف'}")
-    await update.message.reply_text(msg, parse_mode="HTML")
-
-async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    config["stats"] = {"total_scans": 0, "found_slots": 0, "last_scan": "Reset"}
-    await update.message.reply_text("🔄 تم إعادة تعيين الإحصائيات بنجاح.")
-
-async def daily_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📅 تقرير اليوم: لا توجد بيانات كافية حالياً.")
-
-async def intervals_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = (f"⏱ <b>التواقيت الحالية:</b>\n"
-           f"• الحد الأدنى: {config['min_delay']} ثانية\n"
-           f"• الحد الأقصى: {config['max_delay']} ثانية")
-    await update.message.reply_text(msg, parse_mode="HTML")
-
-async def interval_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.args:
-        try:
-            new_val = int(context.args[0])
-            config["min_delay"] = new_val
-            config["max_delay"] = new_val + 60
-            await update.message.reply_text(f"✅ تم تغيير التوقيت إلى {new_val} ثانية.")
-        except:
-            await update.message.reply_text("❌ يرجى إدخال رقم صحيح. مثال: /interval 60")
-    else:
-        await update.message.reply_text("💡 استخدم الأمر هكذا: /interval [عدد الثواني]")
-
-async def drops_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"📉 حد النقصان الحالي: {config['drop_threshold']}")
-
-async def drop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.args:
-        try:
-            config["drop_threshold"] = int(context.args[0])
-            await update.message.reply_text(f"✅ تم تغيير حد النقصان إلى {config['drop_threshold']}.")
-        except:
-            await update.message.reply_text("❌ يرجى إدخال رقم صحيح.")
-    else:
-        await update.message.reply_text("💡 استخدم الأمر هكذا: /drop [الرقم]")
-
-async def quiet_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"🤫 الساعات الصامتة: من {config['quiet_hours']['start']} إلى {config['quiet_hours']['end']}")
+    global is_running
+    is_running = True
+    await update.message.reply_text("✅ تم تشغيل البوت بنجاح! سيبدأ الفحص الآن.")
 
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    config["is_running"] = False
+    global is_running
+    is_running = False
     await update.message.reply_text("🛑 تم إيقاف البوت مؤقتاً.")
 
 # =============================================
@@ -189,8 +118,10 @@ async def get_browser_context(p):
 
 async def login_to_bls(page):
     if not BLS_EMAIL or not BLS_PASSWORD:
+        log.error("Email or Password not provided in Railway variables!")
         return False
     try:
+        log.info(f"Attempting login for: {BLS_EMAIL}")
         await page.goto("https://algeria.blsspainglobal.com/DZA/account/login", timeout=60000)
         await asyncio.sleep(2)
         await page.fill('input[name="Email"]', BLS_EMAIL)
@@ -198,7 +129,8 @@ async def login_to_bls(page):
         await page.click('button[type="submit"]')
         await asyncio.sleep(5)
         return "dashboard" in page.url.lower() or "appointment" in page.url.lower()
-    except:
+    except Exception as e:
+        log.error(f"Login error: {e}")
         return False
 
 # =============================================
@@ -238,7 +170,7 @@ async def run_monitor():
     log.info("Starting BLS Monitor Loop...")
     
     while True:
-        if not config["is_running"] and not config.get("force_check"):
+        if not is_running:
             await asyncio.sleep(10)
             continue
 
@@ -250,24 +182,22 @@ async def run_monitor():
                 if stealth_async: await stealth_async(page)
 
                 logged_in = await login_to_bls(page)
+                if not logged_in:
+                    log.warning("Login failed. Check your credentials in Railway.")
                 
-                while config["is_running"] or config.get("force_check"):
-                    config["force_check"] = False
-                    config["stats"]["total_scans"] += 1
-                    config["stats"]["last_scan"] = datetime.now().strftime('%H:%M:%S')
-                    
-                    log.info(f"--- Scan Cycle: {config['stats']['last_scan']} ---")
+                while is_running:
+                    log.info(f"--- New Scan Cycle: {datetime.now().strftime('%H:%M:%S')} ---")
                     sample = random.sample(COMBINATIONS, min(3, len(COMBINATIONS)))
                     
                     for combo in sample:
+                        if not is_running: break
                         slots = await check_combination(page, combo)
                         if slots:
-                            config["stats"]["found_slots"] += 1
                             msg = f"🚨 <b>مواعيد متاحة!</b>\n📍 المركز: {combo['loc_ar']} ({combo['sub']})\n🎫 الفئة: {combo['cat']}\n📅 التواريخ: {', '.join(slots[:5])}"
                             send_telegram(msg)
-                        await asyncio.sleep(random.randint(10, 20))
+                        await asyncio.sleep(random.randint(15, 30))
 
-                    wait_time = random.randint(config["min_delay"], config["max_delay"])
+                    wait_time = random.randint(60, 120)
                     log.info(f"Waiting {wait_time}s...")
                     await asyncio.sleep(wait_time)
 
@@ -284,20 +214,9 @@ async def run_monitor():
 async def main():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     
-    # تسجيل الأوامر
     app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("check", check_command))
-    app.add_handler(CommandHandler("stats", stats_command))
-    app.add_handler(CommandHandler("reset", reset_command))
-    app.add_handler(CommandHandler("daily", daily_command))
-    app.add_handler(CommandHandler("intervals", intervals_command))
-    app.add_handler(CommandHandler("interval", interval_command))
-    app.add_handler(CommandHandler("drops", drops_command))
-    app.add_handler(CommandHandler("drop", drop_command))
-    app.add_handler(CommandHandler("quiet", quiet_command))
     app.add_handler(CommandHandler("stop", stop_command))
     
-    # تحديث قائمة Menu في تلغرام
     await set_commands(app)
     
     log.info("Starting Telegram Bot Handlers...")
