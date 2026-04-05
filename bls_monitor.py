@@ -13,6 +13,8 @@ import os
 import subprocess
 from datetime import datetime
 from playwright.async_api import async_playwright
+from telegram import Update, Bot
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 # محاولة استيراد stealth بأمان
 try:
@@ -21,16 +23,22 @@ except ImportError:
     stealth_async = None
 
 # =============================================
-#           USER CONFIGURATION
+#           USER CONFIGURATION (ENV VARS)
 # =============================================
 
-TELEGRAM_BOT_TOKEN = "8674136162:AAF7erCPgpP81NkS0NSz_7ssdruOmEW9eNc"
-TELEGRAM_CHAT_ID   = "8499305437"
+# يفضل وضع هذه القيم في متغيرات البيئة في Railway
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8674136162:AAF7erCPgpP81NkS0NSz_7ssdruOmEW9eNc")
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "8499305437")
+BLS_EMAIL          = os.getenv("BLS_EMAIL", "")  # أضف إيميلك هنا أو في Railway
+BLS_PASSWORD       = os.getenv("BLS_PASSWORD", "") # أضف كلمة سرك هنا أو في Railway
 
 BLS_URL   = "https://algeria.blsspainglobal.com/DZA/bls/appointment"
 HEADLESS  = True
-MIN_DELAY = 30   # زيادة التأخير لتجنب الحظر
-MAX_DELAY = 60
+MIN_DELAY = 60   # زيادة التأخير لتجنب الحظر
+MAX_DELAY = 120
+
+# حالة البوت (تشغيل/إيقاف)
+is_running = True
 
 # =============================================
 #   قائمة المراكز والأنواع
@@ -61,7 +69,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # =============================================
-#           TELEGRAM
+#           TELEGRAM HELPERS
 # =============================================
 
 def send_telegram(text: str):
@@ -71,13 +79,28 @@ def send_telegram(text: str):
     except Exception as e:
         log.error(f"Telegram error: {e}")
 
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global is_running
+    is_running = True
+    await update.message.reply_text("✅ تم تشغيل البوت بنجاح! سيبدأ الفحص الآن.")
+    log.info("Bot started by user via Telegram.")
+
+async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global is_running
+    is_running = False
+    await update.message.reply_text("🛑 تم إيقاف البوت مؤقتاً. لن يتم إجراء أي فحص حتى تعيد تشغيله.")
+    log.info("Bot stopped by user via Telegram.")
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status = "🟢 يعمل" if is_running else "🔴 متوقف"
+    await update.message.reply_text(f"حالة البوت الحالية: {status}")
+
 # =============================================
 #           BROWSER ENGINE
 # =============================================
 
 async def get_browser_context(p):
     try:
-        # إعدادات التشغيل لـ Railway
         browser = await p.chromium.launch(
             headless=HEADLESS,
             args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
@@ -94,6 +117,38 @@ async def get_browser_context(p):
     return browser, context
 
 # =============================================
+#           LOGIN LOGIC
+# =============================================
+
+async def login_to_bls(page):
+    if not BLS_EMAIL or not BLS_PASSWORD:
+        log.error("Email or Password not provided!")
+        return False
+    
+    try:
+        log.info(f"Attempting login for: {BLS_EMAIL}")
+        await page.goto("https://algeria.blsspainglobal.com/DZA/account/login", timeout=60000)
+        await asyncio.sleep(2)
+        
+        # إدخال البيانات
+        await page.fill('input[name="Email"]', BLS_EMAIL)
+        await page.fill('input[name="Password"]', BLS_PASSWORD)
+        
+        # الضغط على زر الدخول (قد يحتاج لتعديل الـ selector بناءً على الموقع)
+        await page.click('button[type="submit"]')
+        await asyncio.sleep(5)
+        
+        if "dashboard" in page.url.lower() or "appointment" in page.url.lower():
+            log.info("Login successful!")
+            return True
+        else:
+            log.warning("Login might have failed or CAPTCHA appeared.")
+            return False
+    except Exception as e:
+        log.error(f"Login error: {e}")
+        return False
+
+# =============================================
 #           MONITOR LOGIC
 # =============================================
 
@@ -102,7 +157,6 @@ async def check_combination(page, combo):
         await page.goto(BLS_URL, timeout=60000, wait_until="networkidle")
         await asyncio.sleep(2)
 
-        # دالة مساعدة للاختيار الآمن
         async def safe_select(selector, label):
             try:
                 el = page.locator(selector).first
@@ -114,18 +168,15 @@ async def check_combination(page, combo):
                 pass
             return False
 
-        # محاولة اختيار العناصر
         await safe_select('select[id*="Location"]', combo["loc"])
         await safe_select('select[id*="VisaType"]', combo["vtype"])
         await safe_select('select[id*="SubType"]', combo["sub"])
         await safe_select('select[id*="Category"]', combo["cat"])
 
-        # التحقق من وجود مواعيد في الصفحة
         content = await page.content()
         if "no appointment" in content.lower() or "aucun rendez" in content.lower():
             return []
 
-        # البحث عن أي تواريخ متاحة في التقويم
         slots = await page.locator("td.day:not(.disabled)").all_inner_texts()
         return slots if slots else []
 
@@ -134,10 +185,13 @@ async def check_combination(page, combo):
         return []
 
 async def run_monitor():
-    log.info("Starting BLS Monitor...")
-    send_telegram("🚀 <b>البوت بدأ العمل بنجاح على Railway</b>")
+    log.info("Starting BLS Monitor Loop...")
     
     while True:
+        if not is_running:
+            await asyncio.sleep(10)
+            continue
+
         async with async_playwright() as p:
             browser = None
             try:
@@ -146,20 +200,26 @@ async def run_monitor():
                 if stealth_async:
                     await stealth_async(page)
 
-                while True:
+                # تسجيل الدخول أولاً
+                logged_in = await login_to_bls(page)
+                if not logged_in:
+                    log.warning("Continuing without login or login failed.")
+
+                while is_running:
                     log.info(f"--- New Scan Cycle: {datetime.now().strftime('%H:%M:%S')} ---")
-                    
-                    # فحص عينة عشوائية في كل دورة لتجنب الحظر السريع
-                    sample = random.sample(COMBINATIONS, min(5, len(COMBINATIONS)))
+                    sample = random.sample(COMBINATIONS, min(3, len(COMBINATIONS)))
                     
                     for combo in sample:
+                        if not is_running: break
                         slots = await check_combination(page, combo)
                         if slots:
                             msg = f"🚨 <b>مواعيد متاحة!</b>\n📍 المركز: {combo['loc_ar']} ({combo['sub']})\n🎫 الفئة: {combo['cat']}\n📅 التواريخ: {', '.join(slots[:5])}"
                             send_telegram(msg)
-                            log.info(f"Found slots for {combo['sub']}")
+                            # أخذ لقطة شاشة للتأكيد
+                            await page.screenshot(path="screenshot.png")
+                            # هنا يمكن إضافة كود لإرسال الصورة عبر تلغرام
                         
-                        await asyncio.sleep(random.randint(5, 10))
+                        await asyncio.sleep(random.randint(10, 20))
 
                     wait_time = random.randint(MIN_DELAY, MAX_DELAY)
                     log.info(f"Cycle finished. Waiting {wait_time}s...")
@@ -167,14 +227,40 @@ async def run_monitor():
 
             except Exception as e:
                 log.error(f"Main loop error: {e}")
-                send_telegram(f"⚠️ <b>تنبيه:</b> حدث خطأ في البوت، سيتم إعادة التشغيل تلقائياً.\n<code>{str(e)[:100]}</code>")
                 await asyncio.sleep(30)
             finally:
                 if browser:
                     await browser.close()
 
+# =============================================
+#           MAIN ENTRY POINT
+# =============================================
+
+async def main():
+    # تشغيل نظام أوامر تلغرام في الخلفية
+    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("stop", stop_command))
+    app.add_handler(CommandHandler("status", status_command))
+    
+    # تشغيل البوت وتلغرام معاً
+    log.info("Starting Telegram Bot Handlers...")
+    
+    # تشغيل المراقبة كمهمة منفصلة
+    monitor_task = asyncio.create_task(run_monitor())
+    
+    # تشغيل استقبال أوامر تلغرام
+    async with app:
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling()
+        
+        # إبقاء البرنامج يعمل
+        await monitor_task
+
 if __name__ == "__main__":
     try:
-        asyncio.run(run_monitor())
-    except KeyboardInterrupt:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
         pass

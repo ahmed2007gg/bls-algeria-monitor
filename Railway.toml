@@ -7,5 +7,5 @@ restartPolicyType = "always"
 
 [env]
 PLAYWRIGHT_BROWSERS_PATH = "0"
-NIXPACKS_PKGS = "playwright-driver"
+NIXPACKS_PKGS = "playwright-driver, python311"
 NIXPACKS_PYTHON_VERSION = "3.11"

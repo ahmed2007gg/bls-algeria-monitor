@@ -3,3 +3,4 @@ playwright-stealth
 requests
 asyncio
 datetime
+python-telegram-bot
