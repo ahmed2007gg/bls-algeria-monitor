@@ -1,3 +1,5 @@
 playwright
 playwright-stealth
 requests
+asyncio
+datetime
