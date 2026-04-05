@@ -2,5 +2,9 @@
 builder = "nixpacks"
 
 [deploy]
-startCommand = "playwright install chromium && python bls_monitor.py"
+startCommand = "python bls_monitor.py"
 restartPolicyType = "always"
+
+[env]
+PLAYWRIGHT_BROWSERS_PATH = "0"
+NIXPACKS_PKGS = "playwright-driver"

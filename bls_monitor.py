@@ -18,6 +18,7 @@ import logging
 import requests
 from datetime import datetime
 from playwright.async_api import async_playwright
+from playwright_stealth import stealth_async
 
 # =============================================
 #           USER CONFIGURATION - عدّل هنا
@@ -115,16 +116,27 @@ async def make_browser(playwright):
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/123.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
     ]
-    browser = await playwright.chromium.launch(headless=HEADLESS)
+    # محاولة تشغيل المتصفح مع معالجة الأخطاء الشائعة في Railway
+    try:
+        browser = await playwright.chromium.launch(headless=HEADLESS)
+    except Exception as e:
+        log.error(f"Failed to launch chromium: {e}")
+        # محاولة التثبيت التلقائي إذا فشل التشغيل (كحل أخير)
+        import subprocess
+        subprocess.run(["playwright", "install", "chromium"], check=True)
+        browser = await playwright.chromium.launch(headless=HEADLESS)
+
     context = await browser.new_context(
         user_agent=random.choice(agents),
         viewport={"width": 1366, "height": 768},
         locale="fr-FR",
     )
-    await context.add_init_script(
-        "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-    )
-    return browser, context
+    
+    # استخدام stealth لمنع اكتشاف البوت بشكل أفضل
+    page = await context.new_page()
+    await stealth_async(page)
+    
+    return browser, context, page
 
 # =============================================
 #   اختيار عنصر من dropdown بالنص
@@ -324,8 +336,7 @@ async def monitor():
         async with async_playwright() as p:
             browser = None
             try:
-                browser, context = await make_browser(p)
-                page = await context.new_page()
+                browser, context, page = await make_browser(p)
 
                 while True:
                     check_count += 1
