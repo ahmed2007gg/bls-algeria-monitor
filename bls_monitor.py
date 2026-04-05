@@ -18,7 +18,7 @@ import logging
 import requests
 from datetime import datetime
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
+from playwright_stealth import stealth_async, stealth_page_async
 
 # =============================================
 #           USER CONFIGURATION - عدّل هنا
@@ -134,7 +134,15 @@ async def make_browser(playwright):
     
     # استخدام stealth لمنع اكتشاف البوت بشكل أفضل
     page = await context.new_page()
-    await stealth_async(page)
+    try:
+        # المحاولة الأولى باستخدام stealth_async
+        await stealth_async(page)
+    except (ImportError, NameError):
+        # المحاولة الثانية باستخدام stealth_page_async إذا فشلت الأولى
+        try:
+            await stealth_page_async(page)
+        except:
+            log.warning("Could not apply stealth to the page.")
     
     return browser, context, page
 
