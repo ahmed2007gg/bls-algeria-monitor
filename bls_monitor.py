@@ -9,11 +9,12 @@ import asyncio
 import random
 import logging
 import requests
+import json
 import os
 import subprocess
 from datetime import datetime
 from playwright.async_api import async_playwright
-from telegram import Update, Bot, BotCommand
+from telegram import Update, BotCommand
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 try:
@@ -27,8 +28,6 @@ except ImportError:
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
-BLS_EMAIL          = os.getenv("BLS_EMAIL", "")
-BLS_PASSWORD       = os.getenv("BLS_PASSWORD", "")
 
 BLS_URL  = "https://algeria.blsspainglobal.com/DZA/bls/appointment"
 HEADLESS = True
@@ -107,13 +106,11 @@ async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = "✅ تعمل" if is_running else "🛑 متوقفة"
-    email_set = "✅" if BLS_EMAIL else "❌ غير محددة"
-    pass_set  = "✅" if BLS_PASSWORD else "❌ غير محددة"
+    cookies_exist = "✅" if os.path.exists("cookies.json") else "❌ غير موجود"
     msg = (
         f"📊 <b>حالة البوت</b>\n"
         f"المراقبة: {state}\n"
-        f"البريد الإلكتروني: {email_set}\n"
-        f"كلمة المرور: {pass_set}\n"
+        f"ملف الكوكيز: {cookies_exist}\n"
         f"عدد التركيبات: {len(COMBINATIONS)}"
     )
     await update.message.reply_text(msg, parse_mode="HTML")
@@ -147,48 +144,64 @@ async def get_browser_context(p):
     return browser, context
 
 # =============================================
-#           LOGIN LOGIC
+#           LOGIN VIA COOKIES
 # =============================================
 
-async def login_to_bls(page) -> bool:
-    if not BLS_EMAIL or not BLS_PASSWORD:
-        log.error("BLS_EMAIL or BLS_PASSWORD not set in environment variables!")
-        send_telegram("⚠️ <b>خطأ:</b> لم يتم تحديد البريد الإلكتروني أو كلمة المرور في متغيرات Railway.")
-        return False
-    try:
-        log.info(f"Attempting login for: {BLS_EMAIL}")
-        await page.goto(
-            "https://algeria.blsspainglobal.com/DZA/account/login",
-            timeout=90000,
-            wait_until="domcontentloaded"
+async def load_cookies(context) -> bool:
+    cookies_path = "cookies.json"
+    if not os.path.exists(cookies_path):
+        log.error("cookies.json not found!")
+        send_telegram(
+            "⚠️ <b>خطأ:</b> ملف cookies.json غير موجود.\n"
+            "يرجى تصدير الكوكيز من المتصفح بعد تسجيل الدخول ورفعها على GitHub."
         )
+        return False
 
-        # انتظار ظهور حقل الإيميل صراحةً قبل أي إجراء
-        await page.wait_for_selector('input[name="Email"]', timeout=60000, state="visible")
-        await asyncio.sleep(2)
+    try:
+        with open(cookies_path, "r") as f:
+            cookies = json.load(f)
 
-        await page.fill('input[name="Email"]', BLS_EMAIL)
-        await page.fill('input[name="Password"]', BLS_PASSWORD)
-        await page.click('button[type="submit"]')
+        pw_cookies = []
+        for c in cookies:
+            cookie = {
+                "name": c["name"],
+                "value": c["value"],
+                "domain": c["domain"],
+                "path": c.get("path", "/"),
+                "httpOnly": c.get("httpOnly", False),
+                "secure": c.get("secure", False),
+            }
+            same_site = c.get("sameSite", "Lax")
+            if same_site and same_site.lower() in ["strict", "lax", "none"]:
+                cookie["sameSite"] = same_site.capitalize()
+            if c.get("expirationDate"):
+                cookie["expires"] = int(c["expirationDate"])
+            pw_cookies.append(cookie)
 
-        # انتظار انتقال الصفحة بعد اللوجين
-        await page.wait_for_load_state("domcontentloaded", timeout=30000)
-        await asyncio.sleep(3)
-
-        current_url = page.url.lower()
-        success = "login" not in current_url
-
-        if success:
-            log.info(f"Login successful. URL: {page.url}")
-        else:
-            log.error(f"Login failed. Current URL: {page.url}")
-            send_telegram(f"⚠️ <b>فشل تسجيل الدخول.</b>\nالرابط الحالي: {page.url}")
-
-        return success
+        await context.add_cookies(pw_cookies)
+        log.info(f"Loaded {len(pw_cookies)} cookies successfully.")
+        return True
 
     except Exception as e:
-        log.error(f"Login error: {e}")
-        send_telegram(f"⚠️ <b>خطأ في تسجيل الدخول:</b> {e}")
+        log.error(f"Error loading cookies: {e}")
+        send_telegram(f"⚠️ <b>خطأ في تحميل الكوكيز:</b> {e}")
+        return False
+
+async def verify_session(page) -> bool:
+    try:
+        await page.goto(BLS_URL, timeout=60000, wait_until="domcontentloaded")
+        await asyncio.sleep(3)
+        if "login" in page.url.lower():
+            log.warning("Session expired.")
+            send_telegram(
+                "⚠️ <b>انتهت صلاحية الجلسة!</b>\n"
+                "يرجى تسجيل الدخول يدوياً وتصدير الكوكيز من جديد ورفعها على GitHub."
+            )
+            return False
+        log.info(f"Session valid. URL: {page.url}")
+        return True
+    except Exception as e:
+        log.error(f"Session verify error: {e}")
         return False
 
 # =============================================
@@ -201,10 +214,9 @@ async def check_combination(page, combo) -> list:
         await page.goto(BLS_URL, timeout=90000, wait_until="domcontentloaded")
         await asyncio.sleep(3)
 
-        # تحقق أننا لا زلنا مسجلين دخول
         if "login" in page.url.lower():
-            log.warning("Session expired, need to re-login.")
-            return None  # None = إشارة لإعادة اللوجين
+            log.warning("Session expired during check.")
+            return None
 
         async def safe_select(selector, label):
             try:
@@ -227,18 +239,16 @@ async def check_combination(page, combo) -> list:
         await asyncio.sleep(2)
         content = await page.content()
 
-        # فحص نصوص "لا يوجد موعد"
         no_slot_phrases = [
             "no appointment", "aucun rendez", "no slot", "pas de créneau",
             "no available", "غير متاح", "لا توجد"
         ]
         if any(phrase in content.lower() for phrase in no_slot_phrases):
-            log.info(f"No slots found for {combo['sub']} | {combo['cat']}")
+            log.info(f"No slots: {combo['sub']} | {combo['cat']}")
             return []
 
-        # محاولة إيجاد خلايا التقويم المتاحة
         slots = await page.locator("td.day:not(.disabled):not(.old):not(.new)").all_inner_texts()
-        log.info(f"Raw slots found: {slots}")
+        log.info(f"Raw slots: {slots}")
         slots = [s.strip() for s in slots if s.strip() and s.strip().isdigit()]
 
         return slots
@@ -263,19 +273,27 @@ async def run_monitor():
             browser = None
             try:
                 browser, context = await get_browser_context(p)
+
+                cookies_ok = await load_cookies(context)
+                if not cookies_ok:
+                    log.warning("Cookies not loaded. Retrying in 5 minutes.")
+                    await asyncio.sleep(300)
+                    continue
+
                 page = await context.new_page()
                 if stealth_async:
                     await stealth_async(page)
 
-                logged_in = await login_to_bls(page)
-                if not logged_in:
-                    log.warning("Login failed. Retrying in 5 minutes.")
-                    await asyncio.sleep(300)
+                session_ok = await verify_session(page)
+                if not session_ok:
+                    log.warning("Session invalid. Retrying in 10 minutes.")
+                    await asyncio.sleep(600)
                     continue
 
                 while is_running:
-                    log.info(f"=== Scan Cycle Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
+                    log.info(f"=== Scan Cycle: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
 
+                    session_lost = False
                     for combo in COMBINATIONS:
                         if not is_running:
                             break
@@ -283,12 +301,9 @@ async def run_monitor():
                         result = await check_combination(page, combo)
 
                         if result is None:
-                            # انتهت الجلسة — إعادة لوجين
-                            log.warning("Session lost, re-logging in...")
-                            logged_in = await login_to_bls(page)
-                            if not logged_in:
-                                break
-                            result = await check_combination(page, combo)
+                            log.warning("Session lost during scan. Restarting...")
+                            session_lost = True
+                            break
 
                         if result:
                             msg = (
@@ -303,13 +318,16 @@ async def run_monitor():
 
                         await asyncio.sleep(random.randint(8, 15))
 
+                    if session_lost:
+                        break
+
                     wait_time = random.randint(60, 120)
                     log.info(f"=== Cycle Complete. Waiting {wait_time}s... ===")
                     await asyncio.sleep(wait_time)
 
             except Exception as e:
                 log.error(f"Monitor loop error: {e}")
-                send_telegram(f"⚠️ <b>خطأ في المراقب:</b> {e}\nسيتم إعادة المحاولة خلال 30 ثانية.")
+                send_telegram(f"⚠️ <b>خطأ في المراقب:</b> {e}\nإعادة المحاولة خلال 30 ثانية.")
                 await asyncio.sleep(30)
             finally:
                 if browser:
@@ -336,14 +354,12 @@ async def main():
 
     await set_commands(app)
 
-    log.info("Bot is running. Starting monitor...")
-
     async with app:
         await app.initialize()
         await app.start()
         await app.updater.start_polling()
 
-        send_telegram("🤖 <b>البوت شغّال!</b>\nبدأت مراقبة مواعيد BLS. اكتب /status للتحقق من الحالة.")
+        send_telegram("🤖 <b>البوت شغّال!</b>\nبدأت مراقبة مواعيد BLS عبر الكوكيز. اكتب /status للتحقق.")
 
         await run_monitor()
 
